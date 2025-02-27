@@ -1,0 +1,92 @@
+import os
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Model
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.layers import Input, LSTM, Embedding, Dense, Add
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.applications.resnet50 import preprocess_input
+from PIL import Image
+import pickle
+
+# Load Pre-trained CNN (ResNet-50) for Feature Extraction
+def extract_features(image_path):
+    model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
+    image = Image.open(image_path).resize((224, 224))
+    image = np.array(image)
+    if image.shape[-1] == 4:  # Convert RGBA to RGB
+        image = image[..., :3]
+    image = np.expand_dims(image, axis=0)
+    image = preprocess_input(image)
+    feature = model.predict(image)
+    return feature
+
+# Load Captions and Preprocess
+def load_captions(filename):
+    with open(filename, 'r') as f:
+        captions = f.read().strip().split('\n')
+    descriptions = {}
+    for line in captions:
+        tokens = line.split(',')
+        if len(tokens) < 2:
+            continue
+        image_id, caption = tokens[0].strip(), tokens[1].strip()
+        descriptions[image_id] = '<start> ' + caption.lower() + ' <end>'
+    return descriptions
+
+# Tokenization
+def prepare_tokenizer(descriptions):
+    tokenizer = Tokenizer()
+    tokenizer.fit_on_texts(descriptions.values())
+    return tokenizer
+
+# Convert Captions to Sequences
+def captions_to_sequences(tokenizer, descriptions, max_length):
+    sequences = {}
+    for img_id, caption in descriptions.items():
+        seq = tokenizer.texts_to_sequences([caption])[0]
+        sequences[img_id] = seq
+    return sequences
+
+# Build LSTM-based Caption Generator
+def build_caption_model(vocab_size, max_length, feature_dim=2048):
+    inputs1 = Input(shape=(feature_dim,))
+    fe1 = Dense(256, activation='relu')(inputs1)
+    
+    inputs2 = Input(shape=(max_length,))
+    emb = Embedding(vocab_size, 256, mask_zero=True)(inputs2)
+    lstm = LSTM(256)(emb)
+    
+    decoder = Add()([fe1, lstm])
+    decoder = Dense(256, activation='relu')(decoder)
+    outputs = Dense(vocab_size, activation='softmax')(decoder)
+    
+    model = Model(inputs=[inputs1, inputs2], outputs=outputs)
+    model.compile(loss='categorical_crossentropy', optimizer='adam')
+    return model
+
+# Parameters
+MAX_LENGTH = 30  # Maximum caption length
+IMAGE_PATH = 'sample.jpg'  # Change to your image path
+CAPTION_FILE = 'captions.txt'  # Change to your captions file
+
+# Load Data
+descriptions = load_captions(CAPTION_FILE)
+tokenizer = prepare_tokenizer(descriptions)
+vocab_size = len(tokenizer.word_index) + 1
+sequences = captions_to_sequences(tokenizer, descriptions, MAX_LENGTH)
+
+# Extract Features
+image_feature = extract_features(IMAGE_PATH)
+
+# Build and Train Model
+model = build_caption_model(vocab_size, MAX_LENGTH)
+
+# Save Model and Tokenizer
+model.save('image_captioning_model.h5')
+with open('tokenizer.pkl', 'wb') as f:
+    pickle.dump(tokenizer, f)
+
+print("Model training setup complete!")
